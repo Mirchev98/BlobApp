@@ -1,0 +1,75 @@
+﻿@model List<string>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Azure Blob Storage Files</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" />
+</head>
+<body>
+    <div class="container mt-5">
+        <h2 class="text-center mb-4">Files in Azure Blob Storage</h2>
+
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <h4>Upload New File</h4>
+                <form asp-action="Upload" method="post" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="file">Choose File</label>
+                        <input type="file" name="file" class="form-control" required />
+                    </div>
+                    <div class="form-group">
+                        <label for="tagKey">Tag Key</label>
+                        <input type="text" name="tags[Key]" class="form-control" placeholder="Enter Tag Key" />
+                    </div>
+                    <div class="form-group">
+                        <label for="tagValue">Tag Value</label>
+                        <input type="text" name="tags[Value]" class="form-control" placeholder="Enter Tag Value" />
+                    </div>
+                    <button type="submit" class="btn btn-primary">Upload</button>
+                </form>
+            </div>
+
+            <div class="col-md-6">
+                <h4>Search Files by Tag</h4>
+                <form asp-action="Search" method="get">
+                    <div class="form-group">
+                        <label for="tagKey">Tag Key</label>
+                        <input type="text" name="tagKey" class="form-control" placeholder="Enter Tag Key" required />
+                    </div>
+                    <div class="form-group">
+                        <label for="tagValue">Tag Value</label>
+                        <input type="text" name="tagValue" class="form-control" placeholder="Enter Tag Value" required />
+                    </div>
+                    <button type="submit" class="btn btn-secondary">Search</button>
+                </form>
+            </div>
+        </div>
+
+        <h4>Available Files</h4>
+        <div class="list-group">
+            @foreach (var file in Model)
+            {
+                <div class="list-group-item d-flex justify-content-between align-items-center">
+                    <span>@file</span>
+                    <div>
+                        <form asp-action="Download" method="post" class="d-inline">
+                            <input type="hidden" name="fileName" value="@file" />
+                            <button type="submit" class="btn btn-outline-success btn-sm">Download</button>
+                        </form>
+                        <form asp-action="Delete" method="post" class="d-inline">
+                            <input type="hidden" name="fileName" value="@file" />
+                            <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
+                        </form>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+</body>
+</html>
