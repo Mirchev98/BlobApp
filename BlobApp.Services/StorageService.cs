@@ -1,69 +1,156 @@
 ﻿using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using BlobApp.Services.Interfaces;
+using BlobApp.Services.Models.StorageService;
 using Microsoft.Extensions.Configuration;
+
 namespace BlobApp.Services
 {
-	public class StorageService : IStorageService
-	{
-		private readonly BlobServiceClient _blobServiceClient;
-		private readonly string _containerName = "blobappcontainer";
+    public class StorageService : IStorageService
+    {
+        private readonly BlobServiceClient _blobServiceClient;
+        private readonly string _containerName = "blobappcontainer";
 
-		public StorageService(IConfiguration configuration)
-		{
-			_blobServiceClient = new BlobServiceClient(configuration.GetConnectionString("AzureBlobStorage"));
-		}
+        public StorageService(IConfiguration configuration)
+        {
+            _blobServiceClient = new BlobServiceClient(configuration.GetConnectionString("AzureBlobStorage"));
+        }
 
+        // Upload a file and its associated tags
+        public async Task UploadFileAsync(Stream fileStream, string fileName, IDictionary<string, string> tags)
+        {
+            var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
+            await containerClient.CreateIfNotExistsAsync(PublicAccessType.Blob);
 
-		public async Task UploadFileAsync(Stream fileStream, string fileName, IDictionary<string, string> tags)
-		{
-			var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
-			containerClient.CreateIfNotExists(PublicAccessType.Blob);
+            var blobClient = containerClient.GetBlobClient(fileName);
 
-			var blobClient = containerClient.GetBlobClient(fileName);
-			await blobClient.UploadAsync(fileStream, true);
-			await blobClient.SetTagsAsync(tags);
-		}
+            try
+            {
+                await blobClient.UploadAsync(fileStream, overwrite: true);
 
-		public async Task<Stream> DownloadFileAsync(string fileName)
-		{
-			var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
-			var blobClient = containerClient.GetBlobClient(fileName);
-			var downloadInfo = await blobClient.DownloadAsync();
-			return downloadInfo.Value.Content;
-		}
+                if (tags != null && tags.Any())
+                {
+                    await blobClient.SetTagsAsync(tags);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Error uploading file {fileName}.", ex);
+            }
+        }
 
-		public async Task DeleteFileAsync(string fileName)
-		{
-			var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
-			var blobClient = containerClient.GetBlobClient(fileName);
-			await blobClient.DeleteIfExistsAsync();
-		}
+        // Download a file based on its name
+        public async Task<Stream> DownloadFileAsync(string fileName)
+        {
+            var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
+            var blobClient = containerClient.GetBlobClient(fileName);
 
-		public async Task<List<string>> ListFilesAsync()
-		{
-			var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
-			var blobItems = new List<string>();
+            if (await blobClient.ExistsAsync())
+            {
+                try
+                {
+                    var downloadInfo = await blobClient.DownloadAsync();
+                    return downloadInfo.Value.Content;
+                }
+                catch (Exception ex)
+                {
+                    throw new ApplicationException($"Error downloading file {fileName}.", ex);
+                }
+            }
+            else
+            {
+                throw new FileNotFoundException($"The file {fileName} was not found.");
+            }
+        }
 
-			await foreach (var blob in containerClient.GetBlobsAsync())
-			{
-				blobItems.Add(blob.Name);
-			}
+        // Delete a file based on its name
+        public async Task DeleteFileAsync(string fileName)
+        {
+            var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
+            var blobClient = containerClient.GetBlobClient(fileName);
 
-			return blobItems;
-		}
+            if (await blobClient.ExistsAsync())
+            {
+                try
+                {
+                    await blobClient.DeleteIfExistsAsync();
+                }
+                catch (Exception ex)
+                {
+                    throw new ApplicationException($"Error deleting file {fileName}.", ex);
+                }
+            }
+            else
+            {
+                throw new FileNotFoundException($"The file {fileName} was not found.");
+            }
+        }
 
-		public async Task<List<string>> SearchFilesByTagAsync(string tagKey, string tagValue)
-		{
-			var query = $"@{tagKey}='{tagValue}'";
-			var taggedBlobs = new List<string>();
+        // List all files in the storage container
+        public async Task<List<string>> ListFilesAsync()
+        {
+            var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
+            var blobItems = new List<string>();
 
-			await foreach (var blob in _blobServiceClient.FindBlobsByTagsAsync(query))
-			{
-				taggedBlobs.Add(blob.BlobName);
-			}
+            try
+            {
+                await foreach (var blob in containerClient.GetBlobsAsync())
+                {
+                    blobItems.Add(blob.Name);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException("Error listing files.", ex);
+            }
 
-			return taggedBlobs;
-		}
-	}
+            return blobItems;
+        }
+
+        // Search files by tag key and value
+        public async Task<List<string>> SearchFilesByTagAsync(string tagKey, string tagValue)
+        {
+            var blobsWithTag = new List<string>();
+            string searchExpression = $"\"{tagKey}\" = '{tagValue}'";
+
+            try
+            {
+                await foreach (var page in _blobServiceClient.FindBlobsByTagsAsync(searchExpression).AsPages())
+                {
+                    foreach (var blob in page.Values)
+                    {
+                        blobsWithTag.Add(blob.BlobName);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Error searching files by tag {tagKey}={tagValue}.", ex);
+            }
+
+            return blobsWithTag;
+        }
+
+        // List all files along with their tags
+        public async Task<IEnumerable<FileTags>> ListFilesWithTagsAsync()
+        {
+            var filesWithTags = new List<FileTags>();
+            var blobContainerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
+
+            await foreach (var blobItem in blobContainerClient.GetBlobsAsync())
+            {
+                var blobClient = blobContainerClient.GetBlobClient(blobItem.Name);
+                var tagsResult = await blobClient.GetTagsAsync();
+                var tags = tagsResult.Value.Tags;
+
+                filesWithTags.Add(new FileTags
+                {
+                    FileName = blobItem.Name,
+                    Tags = tags
+                });
+            }
+
+            return filesWithTags;
+        }
+    }
 }
