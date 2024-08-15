@@ -3,6 +3,11 @@ using Azure.Storage.Blobs.Models;
 using BlobApp.Services.Interfaces;
 using BlobApp.Services.Models.StorageService;
 using Microsoft.Extensions.Configuration;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace BlobApp.Services
 {
@@ -10,10 +15,12 @@ namespace BlobApp.Services
     {
         private readonly BlobServiceClient _blobServiceClient;
         private readonly string _containerName = "blobappcontainer";
+        private readonly IEncryptionService _encryptionService;
 
-        public StorageService(IConfiguration configuration)
+        public StorageService(IConfiguration configuration, IEncryptionService encryptionService)
         {
             _blobServiceClient = new BlobServiceClient(configuration.GetConnectionString("AzureBlobStorage"));
+            _encryptionService = encryptionService;
         }
 
         // Upload a file and its associated tags
@@ -26,7 +33,11 @@ namespace BlobApp.Services
 
             try
             {
-                await blobClient.UploadAsync(fileStream, overwrite: true);
+                // Encrypt the file stream before uploading
+                using (var encryptedStream = EncryptStream(fileStream))
+                {
+                    await blobClient.UploadAsync(encryptedStream, overwrite: true);
+                }
 
                 if (tags != null && tags.Any())
                 {
@@ -50,7 +61,8 @@ namespace BlobApp.Services
                 try
                 {
                     var downloadInfo = await blobClient.DownloadAsync();
-                    return downloadInfo.Value.Content;
+                    // Decrypt the file stream after downloading
+                    return DecryptStream(downloadInfo.Value.Content);
                 }
                 catch (Exception ex)
                 {
@@ -151,6 +163,32 @@ namespace BlobApp.Services
             }
 
             return filesWithTags;
+        }
+
+        // Encrypt a stream of data
+        private Stream EncryptStream(Stream dataStream)
+        {
+            var data = StreamToByteArray(dataStream);
+            var encryptedData = _encryptionService.EncryptData(data);
+            return new MemoryStream(encryptedData);
+        }
+
+        // Decrypt a stream of data
+        private Stream DecryptStream(Stream encryptedStream)
+        {
+            var encryptedData = StreamToByteArray(encryptedStream);
+            var decryptedData = _encryptionService.DecryptData(encryptedData);
+            return new MemoryStream(decryptedData);
+        }
+
+        // Convert a Stream to a byte array
+        private byte[] StreamToByteArray(Stream stream)
+        {
+            using (var ms = new MemoryStream())
+            {
+                stream.CopyTo(ms);
+                return ms.ToArray();
+            }
         }
     }
 }

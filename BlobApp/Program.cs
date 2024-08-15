@@ -13,8 +13,9 @@ namespace BlobApp
 			builder.Services.AddControllersWithViews();
 
 			builder.Services.AddScoped<IStorageService, StorageService>();
+            builder.Services.AddScoped<IEncryptionService, EncryptionService>();
 
-			var app = builder.Build();
+            var app = builder.Build();
 
 			// Configure the HTTP request pipeline.
 			if (!app.Environment.IsDevelopment())
