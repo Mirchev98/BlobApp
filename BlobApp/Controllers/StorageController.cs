@@ -65,7 +65,11 @@ namespace BlobApp.Controllers
             try
             {
                 var stream = await _storageService.DownloadFileAsync(fileName);
-                return File(stream, "application/octet-stream", fileName);
+                var memoryStream = new MemoryStream();
+                await stream.CopyToAsync(memoryStream);
+                memoryStream.Position = 0;
+
+                return File(memoryStream, "application/octet-stream", fileName);
             }
             catch (Exception ex)
             {
@@ -116,6 +120,22 @@ namespace BlobApp.Controllers
                 TempData["Error"] = $"Error searching files: {ex.Message}";
                 return RedirectToAction("MainPage");
             }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> MoveOldFilesToBlob()
+        {
+            try
+            {
+                await _storageService.MoveOldFilesToBlobAsync();
+                TempData["Success"] = "Old files moved to blob storage successfully.";
+            }
+            catch (Exception ex)
+            {
+                TempData["Error"] = $"Error moving old files: {ex.Message}";
+            }
+
+            return RedirectToAction("MainPage");
         }
     }
 }

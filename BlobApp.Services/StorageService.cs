@@ -3,11 +3,6 @@ using Azure.Storage.Blobs.Models;
 using BlobApp.Services.Interfaces;
 using BlobApp.Services.Models.StorageService;
 using Microsoft.Extensions.Configuration;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace BlobApp.Services
 {
@@ -16,64 +11,81 @@ namespace BlobApp.Services
         private readonly BlobServiceClient _blobServiceClient;
         private readonly string _containerName = "blobappcontainer";
         private readonly IEncryptionService _encryptionService;
+        private readonly string _cacheDirectory;
 
         public StorageService(IConfiguration configuration, IEncryptionService encryptionService)
         {
             _blobServiceClient = new BlobServiceClient(configuration.GetConnectionString("AzureBlobStorage"));
             _encryptionService = encryptionService;
+            _cacheDirectory = configuration["CacheSettings:Directory"];
         }
 
-        // Upload a file and its associated tags
+        //Uploads files to the local directory
         public async Task UploadFileAsync(Stream fileStream, string fileName, IDictionary<string, string> tags)
         {
-            var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
-            await containerClient.CreateIfNotExistsAsync(PublicAccessType.Blob);
+            var localFilePath = Path.Combine(_cacheDirectory, fileName);
 
-            var blobClient = containerClient.GetBlobClient(fileName);
-
-            try
+            using (var localFileStream = new FileStream(localFilePath, FileMode.Create, FileAccess.Write))
             {
-                // Encrypt the file stream before uploading
-                using (var encryptedStream = EncryptStream(fileStream))
-                {
-                    await blobClient.UploadAsync(encryptedStream, overwrite: true);
-                }
+                await fileStream.CopyToAsync(localFileStream);
+            }
 
-                if (tags != null && tags.Any())
-                {
-                    await blobClient.SetTagsAsync(tags);
-                }
-            }
-            catch (Exception ex)
-            {
-                throw new ApplicationException($"Error uploading file {fileName}.", ex);
-            }
+            File.SetLastAccessTime(localFilePath, DateTime.UtcNow);
+
+            // TO DO: Find some way to save the tags as well
         }
 
         // Download a file based on its name
         public async Task<Stream> DownloadFileAsync(string fileName)
         {
-            var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
-            var blobClient = containerClient.GetBlobClient(fileName);
+            var localFilePath = Path.Combine(_cacheDirectory, fileName);
 
-            if (await blobClient.ExistsAsync())
+            if (File.Exists(localFilePath))
             {
-                try
-                {
-                    var downloadInfo = await blobClient.DownloadAsync();
-                    // Decrypt the file stream after downloading
-                    return DecryptStream(downloadInfo.Value.Content);
-                }
-                catch (Exception ex)
-                {
-                    throw new ApplicationException($"Error downloading file {fileName}.", ex);
-                }
+                // Update the last access time if the file is found locally
+                File.SetLastAccessTime(localFilePath, DateTime.UtcNow);
+                var fileStream = new FileStream(localFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+                // Return the file stream
+                return fileStream;
             }
             else
             {
-                throw new FileNotFoundException($"The file {fileName} was not found.");
+                // File not found locally, download from Blob Storage
+                var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
+                var blobClient = containerClient.GetBlobClient(fileName);
+
+                if (await blobClient.ExistsAsync())
+                {
+                    try
+                    {
+                        var downloadInfo = await blobClient.DownloadAsync();
+                        var memoryStream = new MemoryStream();
+                        await downloadInfo.Value.Content.CopyToAsync(memoryStream);
+                        memoryStream.Position = 0;
+
+                        var decryptedStream = DecryptStream(memoryStream);
+
+                        using (var localFileStream = new FileStream(localFilePath, FileMode.Create, FileAccess.Write))
+                        {
+                            await decryptedStream.CopyToAsync(localFileStream);
+                        }
+
+                        return memoryStream;
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new ApplicationException($"Error downloading file {fileName}.", ex);
+                    }
+                }
+                else
+                {
+                    throw new FileNotFoundException($"The file {fileName} was not found in Blob Storage.");
+                }
             }
         }
+
+
 
         // Delete a file based on its name
         public async Task DeleteFileAsync(string fileName)
@@ -165,6 +177,45 @@ namespace BlobApp.Services
             return filesWithTags;
         }
 
+        //Checks if there are any files to be moved to the blob storage
+        public async Task MoveOldFilesToBlobAsync()
+        {
+            var files = Directory.GetFiles(_cacheDirectory);
+            foreach (var file in files)
+            {
+                var lastAccessTime = File.GetLastAccessTimeUtc(file);
+                if ((DateTime.UtcNow - lastAccessTime).TotalSeconds >= 50)
+                {
+                    using (var fileStream = File.OpenRead(file))
+                    {
+                        await UploadFileToBlobAsync(fileStream, Path.GetFileName(file));
+                    }
+                    File.Delete(file); // Delete the local file after uploading to Blob Storage
+                }
+            }
+        }
+
+        //Uploads files to the blob storage
+        private async Task UploadFileToBlobAsync(Stream fileStream, string fileName)
+        {
+            var containerClient = _blobServiceClient.GetBlobContainerClient(_containerName);
+            await containerClient.CreateIfNotExistsAsync(PublicAccessType.Blob);
+
+            var blobClient = containerClient.GetBlobClient(fileName);
+
+            try
+            {
+                using (var encryptedStream = EncryptStream(fileStream))
+                {
+                    await blobClient.UploadAsync(encryptedStream, overwrite: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Error uploading file {fileName} to Blob Storage.", ex);
+            }
+        }
+
         // Encrypt a stream of data
         private Stream EncryptStream(Stream dataStream)
         {
@@ -189,6 +240,12 @@ namespace BlobApp.Services
                 stream.CopyTo(ms);
                 return ms.ToArray();
             }
+        }
+
+        public void SetDownloadedFileFromBlobTime(string fileName)
+        {
+            var localFilePath = Path.Combine(_cacheDirectory, fileName);
+            File.SetLastAccessTime(localFilePath, DateTime.UtcNow);
         }
     }
 }
